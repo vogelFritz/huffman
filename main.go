@@ -4,70 +4,76 @@ import (
 	"container/heap"
 	"fmt"
 	"os"
+	"sync"
+
+	"github.com/vogelFritz/huffman/fileutils"
+	"github.com/vogelFritz/huffman/huffmantree"
 )
 
-type byteHeap []byte
-
-func (b *byteHeap) Push(x any) {
-	*b = append(*b, x.(byte))
+func getFrequencyTable(filename string) map[byte]int {
+	// using fanout concurrency pattern
+	freq := make(map[byte]int)
+	var wg sync.WaitGroup
+	results := make(chan map[byte]int)
+	processChunk := func(chunk []byte) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			freq := make(map[byte]int)
+			for _, r := range chunk {
+				freq[r]++
+			}
+			results <- freq
+		}()
+	}
+	fileutils.ProcessFileInChunks(filename, 1, processChunk)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	for result := range results {
+		for r, count := range result {
+			freq[r] += count
+		}
+	}
+	return freq
 }
 
-func (b *byteHeap) Pop() any {
-	old := *b
-	n := len(old)
-	x := old[n-1]
-	*b = old[0 : n-1]
-	return x
-}
-
-func (b byteHeap) Len() int {
-	return len(b)
-}
-func (b byteHeap) Less(i, j int) bool {
-	return int(b[i]) < int(b[j])
-}
-
-func (b byteHeap) Swap(i, j int) {
-	b[i], b[j] = b[j], b[i]
+func createHuffmanTree(freqTable map[byte]int) huffmantree.NodeHeap {
+	var tree huffmantree.NodeHeap
+	heap.Init(&tree)
+	for k, v := range freqTable {
+		heap.Push(&tree, huffmantree.Node{
+			Words: []byte{k},
+			Freq:  v,
+		})
+	}
+	for tree.Len() > 2 {
+		c1 := heap.Pop(&tree).(huffmantree.Node)
+		c2 := heap.Pop(&tree).(huffmantree.Node)
+		n := huffmantree.Node{
+			Words:    append(c1.Words, c2.Words...),
+			Freq:     c1.Freq + c2.Freq,
+			Children: []huffmantree.Node{c1, c2},
+		}
+		heap.Push(&tree, n)
+	}
+	return tree
 }
 
 func main() {
-	args := os.Args
-	fmt.Println(args)
-	var b byteHeap = make(byteHeap, 10)
+	encode := os.Args[1] == "-c"
+	filename := os.Args[2]
+	// outputPath := os.Args[3]
 
-	doWithHeap(&b)
-
-	s := []byte{
-		'a',
-		'c',
-		'e',
-		'd',
-		'b',
+	if encode {
+		freq := getFrequencyTable(filename)
+		fmt.Println(freq)
+		tree := createHuffmanTree(freq)
+		fmt.Println("huffman tree:")
+		fmt.Println(tree.String())
+		codes := tree.GetCodes()
+		fmt.Println(codes)
+		// Use codes to create encrypted file with codes table at the start
 	}
-	h := byteHeap(s)
-	heap.Init(&h)
-	heap.Push(&h, byte(3))
-
-	fmt.Println(h)
-	fmt.Println(h.Pop())
-
-	m := &byteHeap{2, 1, 5}
-	heap.Init(m)
-	heap.Push(m, byte(3))
-	fmt.Printf("minimum: %d\n", (*m)[0])
-	for m.Len() > 0 {
-		fmt.Printf("%d ", heap.Pop(m))
-	}
-	fmt.Println()
-}
-
-func doWithHeap(h heap.Interface) {
-	heap.Init(h)
-	h.Push(uint8(2))
-	fmt.Println("Pushed 2")
-	x := h.Pop()
-	fmt.Println("pop:", x)
-	x = h.Pop()
-	fmt.Println("pop:", x)
 }
